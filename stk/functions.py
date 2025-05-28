@@ -257,4 +257,94 @@ def Get_Satellite_Load_Matrix(gateway_poseiton_and_load,n,sat_position,scenario2
     # print('Get_Satellite_Load_Matrix OK')
     return Sat_Load_Matrix
 
-
+def get_dynamic_link_data(scenario, stkRoot, start_time, end_time, time_step, ground_stations, satellites, output_file):
+    """
+    计算并输出动态链路参数到CSV文件
+    :param scenario: STK场景对象
+    :param stkRoot: STK根对象
+    :param start_time: 开始时间(UTCG字符串)
+    :param end_time: 结束时间(UTCG字符串)
+    :param time_step: 时间步长(秒)
+    :param ground_stations: 地面站名称列表
+    :param satellites: 卫星名称列表
+    :param output_file: 输出CSV文件路径
+    """
+    import csv
+    from datetime import datetime, timedelta
+    
+    # 光速(km/s)
+    SPEED_OF_LIGHT = 299792.458
+    
+    # 打开CSV文件准备写入
+    with open(output_file, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        # 写入表头
+        writer.writerow(['Timestamp', 'Source', 'Target', 'SlantRange_km', 
+                        'Delay_ms', 'Elevation_deg', 'Bandwidth_Mbps', 'BER'])
+        
+        # 转换时间格式并计算时间点
+        start = datetime.strptime(start_time, '%d %b %Y %H:%M:%S.%f')
+        end = datetime.strptime(end_time, '%d %b %Y %H:%M:%S.%f')
+        current = start
+        
+        while current <= end:
+            current_str = current.strftime('%d %b %Y %H:%M:%S.%f')
+            
+            # 计算每条星地链路
+            for gs in ground_stations:
+                for sat in satellites:
+                    # 获取接入对象
+                    access = stkRoot.GetObjectFromPath(f'Scenario/{scenario.InstanceName}/Access/{gs}_to_{sat}')
+                    
+                    # 检查当前时刻是否有接入
+                    if access.AccessIsAvailable(current_str):
+                        # 获取数据提供者
+                        dp = access.DataProviders.Item('Link Information').QueryInterface(STKObjects.IAgDataPrvTimeVar)
+                        
+                        # 获取斜距和仰角
+                        result = dp.ExecSingleElements(current_str, 
+                            ElementNames=['Range', 'Elevation Angle'])
+                        
+                        range_km = result.DataSets.GetDataSetByName('Range').GetValues()[0]
+                        elevation = result.DataSets.GetDataSetByName('Elevation Angle').GetValues()[0]
+                        
+                        # 计算时延(ms)
+                        delay_ms = (range_km / SPEED_OF_LIGHT) * 1000
+                        
+                        # 根据仰角估算带宽和BER(简化模型)
+                        if elevation >= 30:  # 高仰角
+                            bandwidth = 100  # Mbps
+                            ber = 1e-6
+                        elif elevation >= 15:  # 中仰角
+                            bandwidth = 50   # Mbps
+                            ber = 1e-5
+                        else:  # 低仰角
+                            bandwidth = 10    # Mbps
+                            ber = 1e-4
+                            
+                        # 写入CSV
+                        writer.writerow([
+                            current.isoformat() + 'Z',
+                            gs,
+                            sat,
+                            round(range_km, 3),
+                            round(delay_ms, 3),
+                            round(elevation, 3),
+                            bandwidth,
+                            ber
+                        ])
+                    else:
+                        # 链路不可用
+                        writer.writerow([
+                            current.isoformat() + 'Z',
+                            gs,
+                            sat,
+                            float('inf'),  # 斜距设为无穷大
+                            float('inf'),  # 时延设为无穷大
+                            0,             # 仰角设为0
+                            0,             # 带宽设为0
+                            1              # BER设为1(最差)
+                        ])
+            
+            # 增加时间步长
+            current += timedelta(seconds=time_step)
